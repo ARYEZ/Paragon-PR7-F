@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.1
+
+- Windows Defender could block PR7-F.exe as "potentially unwanted software" (a false positive common to PyInstaller
+  programs). The build now uses a PyInstaller starter compiled for PR7-F instead of the shared prebuilt one, the .exe
+  carries proper file details (product, company, version), nothing is UPX-packed, and CI scans the program and the
+  installer with Defender before publishing them.
+
 ## 0.3.0
 
 - **Bookmarks**, as FileZilla's: Add bookmark (Ctrl+B) and Manage bookmarks (Ctrl+Shift+B); each has a name, a local

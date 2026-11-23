@@ -29,6 +29,9 @@ it runs on Linux for tests. The owner writes Python; explain the why of changes.
   the GUI (host key, certificate, file exists). `pr7f/panes.py`: list models are plain Python lists (never
   QStandardItemModel: PR7-Z's crash), the family selection band, drag and drop. `pr7f/main_window.py` wires it;
   `window.answers` replaces dialogs in tests.
+- Defender false positives: `pr7f.spec` gives the .exe version details (Windows only) and no UPX; CI reinstalls
+  PyInstaller from source with `PYINSTALLER_COMPILE_BOOTLOADER=1` (its own starter, not the shared prebuilt one),
+  checks the file details, and scans `dist` and the installer with `MpCmdRun` (exit 2 = threat: the build fails).
 - Installer `installer/pr7f.iss` (Inno Setup 6, per user, AppId {34F163CD-E4F2-4415-9865-1175C28F5408} permanent).
   CI installs it, and `tools/verify_install.py installed` starts real FTP/FTPS/SFTP servers and runs the installed
   `PR7-F.exe --check URL OUT` against each.

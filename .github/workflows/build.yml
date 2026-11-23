@@ -21,6 +21,15 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-dev.txt
+      - name: PyInstaller with a starter built here (not the shared prebuilt one Defender distrusts)
+        shell: pwsh
+        env:
+          PYINSTALLER_COMPILE_BOOTLOADER: "1"
+        run: |
+          $v = python -c "import PyInstaller; print(PyInstaller.__version__)"
+          pip install --force-reinstall --no-deps --no-cache-dir --no-binary pyinstaller "pyinstaller==$v"
+          if ($LASTEXITCODE -ne 0) { throw "building PyInstaller's bootloader failed" }
+          python -c "import PyInstaller, os; d = os.path.join(os.path.dirname(PyInstaller.__file__), 'bootloader', 'Windows-64bit-intel'); print(d, sorted(os.listdir(d)))"
       - name: Tests (against real FTP, FTPS and SFTP servers on the runner)
         env:
           QT_QPA_PLATFORM: offscreen
@@ -34,6 +43,9 @@ jobs:
                          "dist/PR7-F/_internal/pr7f/icons/app.ico") {
             if (-not (Test-Path $f)) { throw "missing $f" }
           }
+          $vi = (Get-Item dist/PR7-F/PR7-F.exe).VersionInfo
+          "File details: $($vi.ProductName) $($vi.ProductVersion), $($vi.CompanyName), $($vi.FileDescription)"
+          if ($vi.ProductName -ne "Paragon PR7-F" -or -not $vi.ProductVersion) { throw "the .exe has no file details" }
           Copy-Item README.md, NOTICE.md dist/PR7-F/
       - name: Zip
         shell: pwsh
@@ -47,6 +59,18 @@ jobs:
           & $iscc /DAppVersion=$v installer/pr7f.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
           "PR7F_VERSION=$v" >> $env:GITHUB_ENV
+      - name: Scan the build with Microsoft Defender
+        shell: pwsh
+        run: |
+          $mp = "$env:ProgramFiles\Windows Defender\MpCmdRun.exe"
+          if (-not (Test-Path $mp)) { Write-Warning "Defender isn't on this runner: no scan"; exit 0 }
+          & $mp -SignatureUpdate | Out-Host
+          foreach ($t in (Resolve-Path dist\PR7-F).Path, (Get-Item dist\PR7-F-Setup-*.exe).FullName) {
+            & $mp -Scan -ScanType 3 -File $t -DisableRemediation | Out-Host
+            if ($LASTEXITCODE -eq 2) { throw "Defender flags $t" }
+            if ($LASTEXITCODE -ne 0) { Write-Warning "Defender scan of $t ended with $LASTEXITCODE" }
+          }
+          exit 0
       - name: Test the installer (silent install, check, uninstall, check)
         shell: pwsh
         run: |
