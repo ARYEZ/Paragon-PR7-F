@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0
+
+- **Bookmarks**, as FileZilla's: Add bookmark (Ctrl+B) and Manage bookmarks (Ctrl+Shift+B); each has a name, a local
+  directory and/or a remote directory, and can turn on synchronised browsing and directory comparison when opened.
+  Global bookmarks are always in the Bookmarks menu; site-specific ones are kept with their Site Manager site and
+  listed while connected to it. Names with "&" show as written.
+
 ## 0.2.0
 
 - **Directory listing filters** (View, Ctrl+I, the funnel key), as FileZilla's: filters with conditions on the

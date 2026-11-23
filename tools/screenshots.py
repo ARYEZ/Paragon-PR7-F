@@ -107,3 +107,14 @@ app.processEvents()
 sd.grab().save(str(out / "search.png"))
 srv.stop()
 print("ok")
+
+from pr7f import bookmarks as _bm  # noqa: E402
+from pr7f.bookmark_dialog import ManageBookmarksDialog  # noqa: E402
+_bm.save_global([_bm.Bookmark("Music (this PC)", str(local)), _bm.Bookmark("Website root", remote="/public_html")])
+mb = ManageBookmarksDialog("", w)
+mb.lists["global"].append(_bm.Bookmark("ELSEWORLD upload", str(local), "/public_html/music/elseworld", True, True))
+mb._fill(("global", 2))
+mb.show()
+app.processEvents()
+mb.grab().save(str(out / "bookmarks.png"))
+print("ok")

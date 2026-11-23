@@ -19,6 +19,9 @@ it runs on Linux for tests. The owner writes Python; explain the why of changes.
   per side), `filters.json`; `ListModel.all_rows` vs `rows` (shown), `panes._keep` combines filters and quick search;
   `TransferQueue(exclude=)` leaves filtered entries out of folder transfers. `pr7f/search.py` walks a server folder
   on its own connection; `filter_dialog.py` has the dialogs (one `ConditionsEditor` for filters and search).
+- `pr7f/bookmarks.py` (no Qt): global bookmarks in bookmarks.json, site ones in the site's `bookmarks` list in
+  sites.json (`Site.id` says which site a connection came from). The window fills the Bookmarks menu when it opens
+  (`_fill_bookmarks`) and `go_bookmark` sets both sides, then synchronised browsing once the remote side is there.
 - `pr7f/sites.py` (no Qt): sites JSON in `%APPDATA%\Paragon\PR7-F` (`PR7F_DATA` overrides), passwords only via
   `keyring` (Windows Credential Manager); `PR7F_MEMORY_KEYRING` = an in-memory store (tests). Recent servers never
   hold passwords. Trusted FTPS certificates by SHA-256.

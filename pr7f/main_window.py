@@ -151,6 +151,8 @@ MENUS = {
                   ("&Retry failed transfers", "retry_failed"), ("&Clear finished transfers", "clear_finished")],
     "S&erver": [("&Cancel current operation\tCtrl+.", "cancel"), "-", ("&Reconnect\tCtrl+R", "reconnect"),
                 ("&Disconnect\tCtrl+D", "disconnect"), "-", ("&Search remote files...\tF3", "search_remote")],
+    "&Bookmarks": [("&Add bookmark...\tCtrl+B", "add_bookmark"),
+                   ("&Manage bookmarks...\tCtrl+Shift+B", "manage_bookmarks")],
     "&Help": [("&About PR7-F...", "about")],
 }
 TOOLBAR = {"sitemanager": "site_manager", "log": "toggle_log", "localtree": "toggle_local_tree",
@@ -189,6 +191,9 @@ class MainWindow(QMainWindow):
         bar = self.menuBar()
         for title, items in MENUS.items():
             m = bar.addMenu(title)
+            if title == "&Bookmarks":
+                self.bookmarks_menu = m
+                m.aboutToShow.connect(self._fill_bookmarks)
             for it in items:
                 if it == "-":
                     m.addSeparator()
@@ -511,6 +516,66 @@ class MainWindow(QMainWindow):
 
     def toggle_remote_tree(self):
         self._toggle("remotetree", self.remote.tree)
+
+    # -------------------------------------------------------------------------- bookmarks
+    @property
+    def site_id(self) -> str:
+        return self.site.id if self.site is not None and self.browser.connected else ""
+
+    def bookmark_list(self) -> list[tuple[str, object]]:
+        """What the Bookmarks menu lists after Add / Manage: global ones, then the connected site's."""
+        from . import bookmarks
+        items = [("global", b) for b in bookmarks.load_global()]
+        if self.site_id:
+            items += [("site", b) for b in bookmarks.load_site(self.site_id)]
+        return items
+
+    def _fill_bookmarks(self):
+        m = self.bookmarks_menu
+        for a in m.actions()[2:]:
+            m.removeAction(a)
+        items = self.bookmark_list()
+        kinds = [k for k, _ in items]
+        for i, (kind, b) in enumerate(items):
+            if i == 0 or (kind == "site" and kinds[i - 1] == "global"):
+                m.addSeparator()
+            m.addAction(b.name.replace("&", "&&"), lambda b=b: self.go_bookmark(b))  # "&" isn't a shortcut here
+
+    def add_bookmark(self):
+        from .bookmark_dialog import AddBookmarkDialog
+        dlg = AddBookmarkDialog(self.local.path, self.remote.path if self.browser.connected else "", self.site_id,
+                                self)
+        self._dialog = dlg
+        dlg.exec()
+
+    def manage_bookmarks(self):
+        from .bookmark_dialog import ManageBookmarksDialog
+        dlg = ManageBookmarksDialog(self.site_id, self)
+        self._dialog = dlg
+        dlg.exec()
+
+    def go_bookmark(self, b):
+        """Open a bookmark: its local folder, its remote folder (when connected), then synchronised browsing and
+        comparison as it says. Synchronised browsing starts once both sides are there."""
+        self.sync_base = None
+        self.toolbar.keys["sync"].setChecked(False)
+        if b.local and not self.local.go(b.local):
+            self.log("Error", f"Bookmark {b.name}: the local directory {b.local} isn't there")
+        key = self.toolbar.keys["compare"]
+        if key.isChecked() != b.compare:
+            key.setChecked(b.compare)
+            (compare if b.compare else clear_compare)(self.local.model, self.remote.model)
+
+        def remote_done():
+            if b.sync and b.local and self.remote.path == b.remote:
+                self.toolbar.keys["sync"].setChecked(True)
+                self.sync_base = (self.local.path, self.remote.path)
+                self.log("Status", f"Synchronised browsing: {self.local.path} with {self.remote.path}")
+        if b.remote:
+            if self.browser.connected:
+                self.navigate(b.remote, done=remote_done)
+            else:
+                self.log("Status", f"Bookmark {b.name}: connect to a server to open {b.remote}")
 
     # -------------------------------------------------------------------------- filters, search
     def _filtered_out(self, item) -> bool:
@@ -853,7 +918,7 @@ class MainWindow(QMainWindow):
         all_sites = sites.load_sites()
         d = sites.new_site(self.site.host)
         for k in sites.SITE_KEYS:
-            if hasattr(self.site, k) and k not in ("name",):
+            if hasattr(self.site, k) and k not in ("name", "id"):
                 d[k] = getattr(self.site, k)
         all_sites.append(d)
         sites.save_sites(all_sites)

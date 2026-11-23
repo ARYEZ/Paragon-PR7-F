@@ -51,6 +51,7 @@ class Site:
     remote_dir: str = ""
     local_dir: str = ""
     name: str = ""
+    id: str = ""                      # the Site Manager site it came from ("" for quick connections)
     timeout: float = 20.0
 
     @property
