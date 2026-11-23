@@ -18,4 +18,4 @@ def test_check_against_both_protocols(ftp_server, sftp_server, tmp_path):
 
 
 def test_version(capsys):
-    assert app.main(["--version"]) == 0 and capsys.readouterr().out.strip() == "0.1.0"
+    assert app.main(["--version"]) == 0 and capsys.readouterr().out.strip() == "0.2.0"

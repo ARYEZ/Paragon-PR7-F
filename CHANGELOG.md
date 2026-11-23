@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.0
+
+- **Directory listing filters** (View, Ctrl+I, the funnel key), as FileZilla's: filters with conditions on the
+  filename (contains, is, begins/ends with, regex, does not contain), size (1.5 MB, 200 KB ...), date, path and
+  permissions; all / any / none must match; files, folders, case. Each is switched on separately for the local and
+  the remote side, and they also leave filtered files out of folder transfers. FileZilla's starting set: temporary
+  and backup files, Thumbs.db and desktop.ini, CVS/SVN and Git folders, hidden files, configuration files. The list's
+  summary says "(filtered)" and the funnel key lights up while one is on.
+- **Quick search** (Ctrl+F): a box under the list in use; text or a wildcard pattern (*.mp3).
+- **Search remote files** (F3, the magnifier key): from a folder through all its subfolders, on its own connection,
+  with the same conditions; Stop; results can be downloaded, deleted, or shown in the remote pane.
+
 ## 0.1.0
 
 First version.

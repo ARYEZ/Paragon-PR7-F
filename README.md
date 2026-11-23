@@ -5,7 +5,7 @@ The Paragon family's file transfer program: it works the way **FileZilla** works
 
 ![PR7-F](docs/screenshots/main_window.png)
 
-## What it does (0.1.0)
+## What it does (0.2.0)
 
 - **Protocols, with FileZilla's defaults**: FTP using **explicit TLS when the server offers it** (plain otherwise),
   TLS required or implicit (ftps://, port 990) when chosen; **SFTP** (sftp://, or port 22 in the quick-connect bar)
@@ -19,10 +19,11 @@ The Paragon family's file transfer program: it works the way **FileZilla** works
 - **Files**: create directory, rename, delete (local: to the Recycle Bin), file permissions (chmod), copy URLs,
   **View/Edit** (opens a server file with its program and offers to upload it when you save it).
 - **Directory comparison** and **synchronised browsing**.
+- **Directory listing filters** (Ctrl+I) per side, **quick search** (Ctrl+F) and **Search remote files** (F3).
 - **Site Manager** (Ctrl+S): saved sites with FileZilla's choices. Passwords are kept in **Windows Credential
   Manager**, never in a file.
 
-Coming next: directory listing filters, remote search, bookmarks.
+Coming next: bookmarks.
 
 ## Install
 

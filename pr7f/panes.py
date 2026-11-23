@@ -46,16 +46,27 @@ class ListModel(QAbstractTableModel):
     def __init__(self, columns: list[str], remote_side: bool):
         super().__init__()
         self.columns, self.remote_side = columns, remote_side
-        self.rows: list[Row] = []
+        self.rows: list[Row] = []        # what's shown
+        self.all_rows: list[Row] = []    # everything listed (filters and quick search hide some)
+        self.keep = None                 # Row -> bool, or None: show all
         self.marks: dict[str, str] = {}  # directory comparison: name -> "differs" | "only"
         self.icons = {k: file_icon(k) for k in ("up", "folder", "file", "drive")}
         self.sort_col, self.sort_desc = 0, False
 
     def set_rows(self, rows: list[Row]):
         self.beginResetModel()
-        self.rows = rows
+        self.all_rows = rows
+        self.rows = [r for r in rows if r.kind in ("up", "drive") or self.keep is None or self.keep(r)]
         self._sort()
         self.endResetModel()
+
+    def set_keep(self, keep):
+        self.keep = keep
+        self.set_rows(self.all_rows)
+
+    @property
+    def hidden(self) -> int:
+        return len(self.all_rows) - len(self.rows)
 
     def rowCount(self, parent=QModelIndex()):
         return 0 if parent.isValid() else len(self.rows)
@@ -206,6 +217,76 @@ class FileList(QTreeView):
         self.dropped.emit(src, items, target)
 
 
+class QuickSearch(QWidget):
+    """View > Quick search (Ctrl+F): a box under the list; the list shows only names containing the text
+    (* and ? work as wildcards). Esc or Close clears it."""
+
+    def __init__(self, pane):
+        super().__init__(pane)
+        self.pane = pane
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lab = QLabel("QUICK SEARCH")
+        lab.setProperty("role", "field")
+        lay.addWidget(lab)
+        from PySide6.QtWidgets import QLineEdit, QPushButton
+        self.edit = QLineEdit()
+        self.edit.setPlaceholderText("Part of a name, or a pattern like *.mp3")
+        self.edit.textChanged.connect(lambda _t: pane.refilter())
+        lay.addWidget(self.edit, 1)
+        close = QPushButton("Close")
+        close.clicked.connect(self.close_search)
+        lay.addWidget(close)
+        self.setVisible(False)
+
+    def text(self) -> str:
+        return self.edit.text().strip() if not self.isHidden() else ""
+
+    def open_search(self):
+        self.setVisible(True)
+        self.edit.setFocus()
+        self.edit.selectAll()
+
+    def close_search(self):
+        self.edit.clear()
+        self.setVisible(False)
+        self.pane.refilter()
+        self.pane.list.setFocus()
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key_Escape:
+            self.close_search()
+        else:
+            super().keyPressEvent(e)
+
+
+def _quick_match(text: str):
+    import fnmatch
+    if not text:
+        return None
+    low = text.lower()
+    if any(c in text for c in "*?["):
+        return lambda name: fnmatch.fnmatch(name.lower(), low)
+    return lambda name: low in name.lower()
+
+
+def _keep(pane, side: str):
+    """What the list shows: not hidden by an active filter, and matching the quick search."""
+    q = _quick_match(pane.quick.text())
+    fs = pane.filters
+    active = fs.active(side) if fs is not None else []
+    if not active and q is None:
+        return None
+    from .filters import filter_matches
+
+    def keep(r):
+        if q is not None and not q(r.name):
+            return False
+        path = pane.full(r.name)
+        return not any(filter_matches(f, r.name, r.size, r.mtime, r.is_dir, path, r.perms) for f in active)
+    return keep
+
+
 def _site_header(title: str) -> tuple[QHBoxLayout, QComboBox]:
     row = QHBoxLayout()
     lab = QLabel(title.upper())
@@ -223,7 +304,11 @@ def _tree_style(t):
                     " QTreeView::branch:selected { background: transparent; }")
 
 
-def summary(rows: list[Row], selected: list[Row]) -> str:
+def summary(rows: list[Row], selected: list[Row], hidden: int = 0) -> str:
+    return _summary(rows, selected) + (" (filtered)" if hidden else "")
+
+
+def _summary(rows: list[Row], selected: list[Row]) -> str:
     if selected:
         files = [r for r in selected if not r.is_dir]
         dirs = [r for r in selected if r.is_dir]
@@ -273,10 +358,13 @@ class LocalPane(QWidget):
         self.split.addWidget(self.list)
         self.split.setSizes([160, 400])
         col.addWidget(self.split, 1)
+        self.quick = QuickSearch(self)
+        col.addWidget(self.quick)
         self.info = QLabel("")
         self.info.setProperty("role", "dim")
         col.addWidget(self.info)
         self.on_open_file = None  # double-click on a file: the window uploads it
+        self.filters = None       # filters.FilterSet, set by the window
 
     def go(self, path: str) -> bool:
         path = (path or "").strip()
@@ -348,11 +436,15 @@ class LocalPane(QWidget):
         return [self.model.rows[i.row()] for i in self.list.selectionModel().selectedRows()
                 if self.model.rows[i.row()].kind not in ("up", "drive")]
 
+    def refilter(self):
+        self.model.set_keep(_keep(self, "local"))
+        self._summary()
+
     def full(self, name: str) -> str:
         return os.path.join(self.path, name)
 
     def _summary(self):
-        self.info.setText(summary(self.model.rows, self.selected()))
+        self.info.setText(summary(self.model.rows, self.selected(), self.model.hidden))
 
 
 class RemotePane(QWidget):
@@ -386,10 +478,13 @@ class RemotePane(QWidget):
         self.split.addWidget(self.list)
         self.split.setSizes([160, 400])
         col.addWidget(self.split, 1)
+        self.quick = QuickSearch(self)
+        col.addWidget(self.quick)
         self.info = QLabel("Not connected to any server")
         self.info.setProperty("role", "dim")
         col.addWidget(self.info)
         self.on_open_file = None
+        self.filters = None
 
     def show_listing(self, path: str, entries: list[remote.Entry]):
         self.path, self.entries = path, entries
@@ -446,6 +541,10 @@ class RemotePane(QWidget):
         return [self.model.rows[i.row()] for i in self.list.selectionModel().selectedRows()
                 if self.model.rows[i.row()].kind != "up"]
 
+    def refilter(self):
+        self.model.set_keep(_keep(self, "remote"))
+        self._summary()
+
     def full(self, name: str) -> str:
         return remote.join(self.path, name)
 
@@ -454,7 +553,7 @@ class RemotePane(QWidget):
 
     def _summary(self):
         if self.path:
-            self.info.setText(summary(self.model.rows, self.selected()))
+            self.info.setText(summary(self.model.rows, self.selected(), self.model.hidden))
 
 
 def compare(local: ListModel, remote_model: ListModel) -> None:

@@ -15,6 +15,10 @@ it runs on Linux for tests. The owner writes Python; explain the why of changes.
 - `pr7f/transfers.py` (no Qt): `TransferQueue` with worker threads, each opening its own session; folders expanded
   in place; `ask_exists(Exists) -> (action, apply_to_all)` or `("rename", name)`; retries on lost connections;
   `stop()` puts running items back.
+- `pr7f/filters.py` (no Qt): `Filter` (conditions, match all/any/none, files/dirs/case), `FilterSet` (which are on
+  per side), `filters.json`; `ListModel.all_rows` vs `rows` (shown), `panes._keep` combines filters and quick search;
+  `TransferQueue(exclude=)` leaves filtered entries out of folder transfers. `pr7f/search.py` walks a server folder
+  on its own connection; `filter_dialog.py` has the dialogs (one `ConditionsEditor` for filters and search).
 - `pr7f/sites.py` (no Qt): sites JSON in `%APPDATA%\Paragon\PR7-F` (`PR7F_DATA` overrides), passwords only via
   `keyring` (Windows Credential Manager); `PR7F_MEMORY_KEYRING` = an in-memory store (tests). Recent servers never
   hold passwords. Trusted FTPS certificates by SHA-256.

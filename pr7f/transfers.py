@@ -56,7 +56,7 @@ class Exists:
 
 
 class TransferQueue:
-    def __init__(self, connect, workers: int = 2, ask_exists=None, on_change=None, log=None):
+    def __init__(self, connect, workers: int = 2, ask_exists=None, on_change=None, log=None, exclude=None):
         """connect() -> a connected remote session (a new one per worker). ask_exists(Exists) -> (action, apply_to_all)
         or (\"rename\", new name); None asks nothing and overwrites."""
         self.connect = connect
@@ -64,6 +64,9 @@ class TransferQueue:
         self.ask_exists = ask_exists
         self.on_change = on_change or (lambda item: None)
         self.log = log or (lambda kind, text: None)
+        # exclude(item) -> True leaves a file or folder out when a folder is expanded: FileZilla applies the
+        # directory listing filters to folder transfers too.
+        self.exclude = exclude or (lambda item: False)
         self.items: list[Item] = []
         self.lock = threading.RLock()
         self.ask_lock = threading.Lock()  # one question at a time, whatever the number of workers
@@ -299,6 +302,7 @@ class TransferQueue:
             for e in sorted(sess.list(it.remote), key=lambda e: e.name.lower()):
                 children.append(Item("download", os.path.join(it.local, e.name), posixpath.join(it.remote, e.name),
                                      e.size, e.is_dir, e.mtime))
+        children = [c for c in children if not self.exclude(c)]
         with self.lock:
             i = next((k for k, x in enumerate(self.items) if x.id == it.id), len(self.items))
             self.items[i + 1:i + 1] = children

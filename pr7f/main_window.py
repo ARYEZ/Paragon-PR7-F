@@ -8,6 +8,7 @@ can replace the dialogs (tests).
 from __future__ import annotations
 
 import os
+import posixpath
 import shutil
 import tempfile
 
@@ -142,20 +143,20 @@ MENUS = {
     "&File": [("&Site Manager...\tCtrl+S", "site_manager"), ("&Copy current connection to Site Manager...",
                                                               "save_current"), "-", ("E&xit\tCtrl+Q", "close")],
     "&Edit": [("&Settings...", "open_settings")],
-    "&View": [("&Refresh\tF5", "refresh"), ("Directory &comparison", "toggle_compare"), "-",
+    "&View": [("&Refresh\tF5", "refresh"), ("Directory &listing filters...\tCtrl+I", "open_filters"),
+              ("&Quick search\tCtrl+F", "quick_search"), ("Directory &comparison", "toggle_compare"), "-",
               ("&Message log", "toggle_log"), ("&Local directory tree", "toggle_local_tree"),
               ("&Remote directory tree", "toggle_remote_tree"), ("Transfer &queue", "toggle_queue")],
     "&Transfer": [("&Process queue\tCtrl+P", "process_queue"), ("&Stop processing", "stop_queue"),
                   ("&Retry failed transfers", "retry_failed"), ("&Clear finished transfers", "clear_finished")],
     "S&erver": [("&Cancel current operation\tCtrl+.", "cancel"), "-", ("&Reconnect\tCtrl+R", "reconnect"),
-                ("&Disconnect\tCtrl+D", "disconnect"), "-", ("&Search remote files...\tF3", None),
-                ("Directory listing &filters...\tCtrl+I", None)],
+                ("&Disconnect\tCtrl+D", "disconnect"), "-", ("&Search remote files...\tF3", "search_remote")],
     "&Help": [("&About PR7-F...", "about")],
 }
 TOOLBAR = {"sitemanager": "site_manager", "log": "toggle_log", "localtree": "toggle_local_tree",
            "remotetree": "toggle_remote_tree", "queue": "toggle_queue", "refresh": "refresh",
            "process": "process_queue", "cancel": "cancel", "disconnect": "disconnect", "reconnect": "reconnect",
-           "compare": "toggle_compare", "sync": "toggle_sync"}
+           "compare": "toggle_compare", "sync": "toggle_sync", "filter": "open_filters", "search": "search_remote"}
 
 
 class MainWindow(QMainWindow):
@@ -175,6 +176,7 @@ class MainWindow(QMainWindow):
         self.sync_base: tuple[str, str] | None = None
         self._build()
         self.local.go(start_local or settings.get("local_dir", "") or os.path.expanduser("~"))
+        self._filter_key()
         self.timer = QTimer(self, interval=200)
         self.timer.timeout.connect(self._tick)
         self.timer.start()
@@ -241,6 +243,11 @@ class MainWindow(QMainWindow):
         self.remote.list.customContextMenuRequested.connect(self._remote_menu)
         sites_split.addWidget(self.remote)
         self.main.addWidget(sites_split)
+        from . import filters
+        self.filters = filters.load()
+        self.local.filters = self.remote.filters = self.filters
+        self.local.refilter()
+        self.remote.refilter()
         self.queue_tabs = QTabWidget()
         self.models = {k: QueueModel() for k in ("queued", "failed", "done")}
         self.queue_views = {k: _queue_view(m) for k, m in self.models.items()}
@@ -505,6 +512,52 @@ class MainWindow(QMainWindow):
     def toggle_remote_tree(self):
         self._toggle("remotetree", self.remote.tree)
 
+    # -------------------------------------------------------------------------- filters, search
+    def _filtered_out(self, item) -> bool:
+        """Folder transfers leave out what the source side's filters hide (FileZilla's default)."""
+        if item.direction == "upload":
+            return self.filters.hides("local", os.path.basename(item.local), item.size, item.mtime, item.is_dir,
+                                      item.local)
+        return self.filters.hides("remote", posixpath.basename(item.remote), item.size, item.mtime,
+                                  item.is_dir, item.remote)
+
+    def set_filters(self, fs):
+        from . import filters
+        self.filters = fs
+        filters.save(fs)
+        self.local.filters = self.remote.filters = fs
+        self.local.refilter()
+        self.remote.refilter()
+        self._filter_key()
+
+    def _filter_key(self):
+        key = self.toolbar.keys["filter"]
+        key.setCheckable(True)
+        key.setChecked(bool(self.filters.local or self.filters.remote))  # lit while a filter is on, as FileZilla
+
+    def open_filters(self):
+        from .filter_dialog import FiltersDialog
+        dlg = FiltersDialog(self.filters, self)
+        self._dialog = dlg  # tests drive the open dialog
+        if dlg.exec():
+            self.set_filters(dlg.result())
+        else:
+            self._filter_key()
+
+    def quick_search(self):
+        """Ctrl+F: the quick search box of the list that has the focus (the local one otherwise)."""
+        pane = self.remote if self.remote.isAncestorOf(QApplication.focusWidget() or self) else self.local
+        pane.quick.open_search()
+
+    def search_remote(self):
+        from .filter_dialog import SearchDialog
+        if not self.browser.connected:
+            QMessageBox.information(self, "Search remote files", "Connect to a server first.")
+            return
+        dlg = SearchDialog(self)
+        self._dialog = dlg
+        dlg.show()
+
     def toggle_queue(self):
         self._toggle("queue", self.queue_tabs)
 
@@ -516,7 +569,8 @@ class MainWindow(QMainWindow):
         if self.queue is None:
             site = self.site
             self.queue = TransferQueue(lambda: self.browser.open(site), workers=settings.get_int("transfers", 2),
-                                       ask_exists=lambda ex: self.asker.ask("exists", ex), log=self._log_from_thread)
+                                       ask_exists=lambda ex: self.asker.ask("exists", ex), log=self._log_from_thread,
+                                       exclude=self._filtered_out)
         return self.queue
 
     def _log_from_thread(self, kind, text):
