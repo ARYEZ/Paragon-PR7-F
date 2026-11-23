@@ -16,7 +16,8 @@ from PySide6.QtCore import QAbstractTableModel, QFileSystemWatcher, QModelIndex,
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QKeySequence, QPainter, QPen, QPixmap, QTextCharFormat
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QHBoxLayout, QHeaderView, QInputDialog,
                                QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QPushButton,
-                               QSplitter, QStatusBar, QStyledItemDelegate, QTabWidget, QToolButton, QTreeView,
+                               QSplitter, QStackedWidget, QStatusBar, QStyledItemDelegate, QTabBar, QTabWidget,
+                               QToolButton, QTreeView,
                                QVBoxLayout, QWidget)
 
 from . import __version__, remote, settings, sites, theme
@@ -26,7 +27,7 @@ from .transfers import TransferQueue
 from .widgets import Header, Toolbar, draw_icon
 
 LOG_COLOURS = {"Status": "TEXT_DIM", "Command": "TEXT", "Response": "LED_ORANGE", "Error": "METER_RED"}
-QUEUE_COLUMNS = ["Server/Local file", "Direction", "Remote file", "Size", "Status"]
+QUEUE_COLUMNS = ["Server", "Local file", "Direction", "Remote file", "Size", "Status"]
 
 
 def recycle(paths: list[str]) -> None:
@@ -52,6 +53,7 @@ class QueueModel(QAbstractTableModel):
     def __init__(self):
         super().__init__()
         self.rows = []
+        self.servers: dict[int, str] = {}  # item id -> the tab's server name (one queue list for every tab)
 
     def set_rows(self, rows):
         if [r.id for r in rows] == [r.id for r in self.rows]:
@@ -79,19 +81,21 @@ class QueueModel(QAbstractTableModel):
         c = index.column()
         if role == Qt.DisplayRole:
             if c == 0:
-                return it.local
+                return self.servers.get(it.id, "")
             if c == 1:
-                return "→" if it.direction == "upload" else "←"
+                return it.local
             if c == 2:
-                return it.remote
+                return "→" if it.direction == "upload" else "←"
             if c == 3:
-                return "" if it.is_dir else f"{it.size:,}"
+                return it.remote
             if c == 4:
+                return "" if it.is_dir else f"{it.size:,}"
+            if c == 5:
                 return {"queued": "", "active": "Transferring", "done": "Done", "skipped": "Skipped",
                         "failed": it.error}.get(it.status, it.status)
-        if role == Qt.TextAlignmentRole and c == 3:
+        if role == Qt.TextAlignmentRole and c == 4:
             return int(Qt.AlignRight | Qt.AlignVCenter)
-        if role == Qt.ForegroundRole and c == 4 and it.status == "failed":
+        if role == Qt.ForegroundRole and c == 5 and it.status == "failed":
             return QColor(theme.METER_RED)
         return None
 
@@ -130,18 +134,19 @@ def _queue_view(model) -> QTreeView:
     v.setSelectionBehavior(QAbstractItemView.SelectRows)
     v.setUniformRowHeights(True)
     v.setModel(model)
-    for i, w in enumerate([440, 100, 420, 110]):
+    for i, w in enumerate([200, 400, 90, 380, 110]):
         v.header().resizeSection(i, w)
     v.header().setStretchLastSection(True)
     v.header().setSectionResizeMode(QHeaderView.Interactive)
-    v.setItemDelegateForColumn(4, ProgressDelegate(v))
+    v.setItemDelegateForColumn(5, ProgressDelegate(v))
     return v
 
 
 # Menus: (text with shortcut after a tab, slot) ; "-" separator; slot None: not yet (greyed out).
 MENUS = {
     "&File": [("&Site Manager...\tCtrl+S", "site_manager"), ("&Copy current connection to Site Manager...",
-                                                              "save_current"), "-", ("E&xit\tCtrl+Q", "close")],
+                                                              "save_current"), "-", ("New &tab\tCtrl+T", "new_tab"),
+              ("&Close tab\tCtrl+W", "close_tab"), "-", ("E&xit\tCtrl+Q", "close")],
     "&Edit": [("&Settings...", "open_settings")],
     "&View": [("&Refresh\tF5", "refresh"), ("Directory &listing filters...\tCtrl+I", "open_filters"),
               ("&Quick search\tCtrl+F", "quick_search"), ("Directory &comparison", "toggle_compare"), "-",
@@ -161,23 +166,94 @@ TOOLBAR = {"sitemanager": "site_manager", "log": "toggle_log", "localtree": "tog
            "compare": "toggle_compare", "sync": "toggle_sync", "filter": "open_filters", "search": "search_remote"}
 
 
+class Tab:
+    """One connection tab, as FileZilla's: its own site, connection, local and remote panes, message log,
+    transfer queue, synchronised browsing and comparison. The window shows the current one."""
+
+    def __init__(self, window: "MainWindow", start_local: str):
+        self.window = window
+        self.site: remote.Site | None = None
+        self.queue: TransferQueue | None = None
+        self.sync_base: tuple[str, str] | None = None
+        self.syncing = False
+        self.compare = False
+        self.edited: dict[str, str] = {}   # View/Edit: local temp copy -> remote path
+        self.enc: tuple = (None, "", "")   # encrypted?, tooltip, status-bar text
+        self.status = ""
+        self.browser = Browser(window.asker)
+        self.page = QSplitter(Qt.Vertical)
+        self.logview = QPlainTextEdit()
+        self.logview.setReadOnly(True)
+        self.logview.setMaximumBlockCount(5000)
+        self.page.addWidget(self.logview)
+        sites_split = QSplitter(Qt.Horizontal)
+        self.local = LocalPane()
+        self.remote = RemotePane()
+        sites_split.addWidget(self.local)
+        sites_split.addWidget(self.remote)
+        self.page.addWidget(sites_split)
+        self.page.setSizes([170, 560])
+        w = window
+        self.browser.logged.connect(self.log)
+        self.local.on_open_file = lambda rows: w.upload(rows, start=True)
+        self.local.list.dropped.connect(w._dropped_local)
+        self.local.list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.local.list.customContextMenuRequested.connect(w._local_menu)
+        self.local.navigated.connect(lambda path: w._local_navigated(path, self))
+        self.remote.on_open_file = lambda rows: w.download(rows, start=True)
+        self.remote.navigate_requested.connect(lambda path: w.navigate(path, tab=self))
+        self.remote.list.dropped.connect(w._dropped_remote)
+        self.remote.list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.remote.list.customContextMenuRequested.connect(w._remote_menu)
+        self.local.filters = self.remote.filters = w.filters
+        self.local.refilter()
+        self.remote.refilter()
+        self.logview.setVisible(w.toolbar.keys["log"].isChecked())
+        self.local.tree.setVisible(w.toolbar.keys["localtree"].isChecked())
+        self.remote.tree.setVisible(w.toolbar.keys["remotetree"].isChecked())
+        self.local.go(start_local)
+
+    def log(self, kind: str, text: str):
+        f = QTextCharFormat()
+        f.setForeground(QColor(getattr(theme, LOG_COLOURS.get(kind, "TEXT"))))
+        cur = self.logview.textCursor()
+        cur.movePosition(cur.MoveOperation.End)
+        cur.insertText(f"{kind + ':':<10}{text}\n", f)
+        self.logview.setTextCursor(cur)
+        self.logview.ensureCursorVisible()
+
+    @property
+    def connected(self) -> bool:
+        return self.browser.connected
+
+    @property
+    def label(self) -> str:
+        """The tab's name: the site's, or user@host, as FileZilla's tabs."""
+        s = self.site
+        if s is None or not self.connected:
+            return "Not connected"
+        who = f"{s.user}@" if s.user and s.user != "anonymous" else ""
+        return s.name or who + s.host
+
+    def close(self):
+        if self.queue is not None:
+            self.queue.stop()
+        self.browser.disconnect()
+        self.browser.stop()
+
+
 class MainWindow(QMainWindow):
     def __init__(self, start_local: str | None = None):
         super().__init__()
         self.resize(1560, 1000)
-        self.site: remote.Site | None = None
-        self.queue: TransferQueue | None = None
         self.answers: dict = {}  # kind -> function(payload): replaces a dialog (tests)
         self.asker = Asker({"hostkey": lambda p: self._ask("hostkey", p), "cert": lambda p: self._ask("cert", p),
                             "exists": lambda p: self._ask("exists", p)})
-        self.browser = Browser(self.asker)
-        self.browser.logged.connect(self.log)
-        self.edited: dict[str, str] = {}  # View/Edit: local temp copy -> remote path
         self.watcher = QFileSystemWatcher(self)
         self.watcher.fileChanged.connect(self._edited_changed)
-        self.sync_base: tuple[str, str] | None = None
+        self.tabs: list[Tab] = []
         self._build()
-        self.local.go(start_local or settings.get("local_dir", "") or os.path.expanduser("~"))
+        self.new_tab(start_local or settings.get("local_dir", "") or os.path.expanduser("~"))
         self._filter_key()
         self.timer = QTimer(self, interval=200)
         self.timer.timeout.connect(self._tick)
@@ -228,31 +304,22 @@ class MainWindow(QMainWindow):
         col.addLayout(self._quickconnect())
         self.main = QSplitter(Qt.Vertical)
         self.main.setContentsMargins(16, 0, 16, 0)
-        self.logview = QPlainTextEdit()
-        self.logview.setReadOnly(True)
-        self.logview.setMaximumBlockCount(5000)
-        self.main.addWidget(self.logview)
-        sites_split = QSplitter(Qt.Horizontal)
-        self.local = LocalPane()
-        self.local.on_open_file = lambda rows: self.upload(rows, start=True)
-        self.local.list.dropped.connect(self._dropped_local)
-        self.local.list.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.local.list.customContextMenuRequested.connect(self._local_menu)
-        self.local.navigated.connect(self._local_navigated)
-        sites_split.addWidget(self.local)
-        self.remote = RemotePane()
-        self.remote.on_open_file = lambda rows: self.download(rows, start=True)
-        self.remote.navigate_requested.connect(self.navigate)
-        self.remote.list.dropped.connect(self._dropped_remote)
-        self.remote.list.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.remote.list.customContextMenuRequested.connect(self._remote_menu)
-        sites_split.addWidget(self.remote)
-        self.main.addWidget(sites_split)
         from . import filters
         self.filters = filters.load()
-        self.local.filters = self.remote.filters = self.filters
-        self.local.refilter()
-        self.remote.refilter()
+        top = QWidget()
+        tl = QVBoxLayout(top)
+        tl.setContentsMargins(0, 0, 0, 0)
+        tl.setSpacing(0)
+        self.tabbar = QTabBar()
+        self.tabbar.setTabsClosable(True)
+        self.tabbar.setExpanding(False)
+        self.tabbar.setDocumentMode(True)
+        self.tabbar.currentChanged.connect(self._tab_changed)
+        self.tabbar.tabCloseRequested.connect(self.close_tab)
+        tl.addWidget(self.tabbar)
+        self.stack = QStackedWidget()
+        tl.addWidget(self.stack, 1)
+        self.main.addWidget(top)
         self.queue_tabs = QTabWidget()
         self.models = {k: QueueModel() for k in ("queued", "failed", "done")}
         self.queue_views = {k: _queue_view(m) for k, m in self.models.items()}
@@ -262,7 +329,7 @@ class MainWindow(QMainWindow):
             v.setContextMenuPolicy(Qt.CustomContextMenu)
             v.customContextMenuRequested.connect(lambda pos, kind=k: self._queue_menu(kind, pos))
         self.main.addWidget(self.queue_tabs)
-        self.main.setSizes([170, 560, 200])
+        self.main.setSizes([760, 200])
         col.addWidget(self.main, 1)
         self.setCentralWidget(central)
         sb = QStatusBar()
@@ -307,21 +374,97 @@ class MainWindow(QMainWindow):
         qc.addStretch(1)
         return qc
 
+    # -------------------------------------------------------------------------- tabs
+    # What the rest of the window (and the tests) call window.site, window.local ... is the current tab's.
+    @property
+    def tab(self) -> Tab:
+        i = self.tabbar.currentIndex()
+        return self.tabs[i if 0 <= i < len(self.tabs) else 0]
+
+    site = property(lambda self: self.tab.site, lambda self, v: setattr(self.tab, "site", v))
+    queue = property(lambda self: self.tab.queue, lambda self, v: setattr(self.tab, "queue", v))
+    sync_base = property(lambda self: self.tab.sync_base, lambda self, v: setattr(self.tab, "sync_base", v))
+    browser = property(lambda self: self.tab.browser)
+    local = property(lambda self: self.tab.local)
+    remote = property(lambda self: self.tab.remote)
+    logview = property(lambda self: self.tab.logview)
+    edited = property(lambda self: self.tab.edited)
+
+    def new_tab(self, local: str | None = None) -> Tab:
+        """File > New tab (Ctrl+T): an unconnected tab, at the current tab's local folder."""
+        start = local or (self.tab.local.path if self.tabs else os.path.expanduser("~"))
+        tab = Tab(self, start)
+        self.tabs.append(tab)
+        self.stack.addWidget(tab.page)
+        self.tabbar.addTab(tab.label)
+        self.tabbar.setCurrentIndex(len(self.tabs) - 1)
+        return tab
+
+    def close_tab(self, index: int | None = None):
+        """File > Close tab (Ctrl+W) or the tab's ×. The last tab stays: closing it only disconnects."""
+        i = self.tabbar.currentIndex() if index is None or index is False else index
+        tab = self.tabs[i]
+        busy = tab.queue is not None and tab.queue.snapshot()["queued"]
+        if busy:
+            ask = self.answers.get("close_busy_tab")
+            ok = ask(tab) if ask else QMessageBox.question(
+                self, "Close tab", f"{tab.label} still has files in the queue. Close the tab and drop them?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes
+            if not ok:
+                return
+        if len(self.tabs) == 1:
+            self.disconnect()
+            return
+        tab.close()
+        self.tabs.pop(i)
+        self.tabbar.removeTab(i)  # (the bar moves to a neighbour first; _tab_changed shows it)
+        self.stack.removeWidget(tab.page)
+        tab.page.deleteLater()
+        self._tab_changed(self.tabbar.currentIndex())
+
+    def _tab_changed(self, index: int):
+        if not (0 <= index < len(self.tabs)):
+            return
+        tab = self.tabs[index]
+        self.stack.setCurrentWidget(tab.page)
+        self.toolbar.keys["sync"].setChecked(tab.sync_base is not None)
+        self.toolbar.keys["compare"].setChecked(tab.compare)
+        encrypted, tip, text = tab.enc
+        self._lock_icon(encrypted, tip)
+        self.enc_text.setText(text)
+        self.status_text.setText(tab.status)
+        self._title()
+
+    def _relabel(self, tab: Tab):
+        if tab in self.tabs:
+            self.tabbar.setTabText(self.tabs.index(tab), tab.label)
+            self.tabbar.setTabToolTip(self.tabs.index(tab), tab.site.host if tab.site else "")
+        if tab is self.tab:
+            self._title()
+
+    def _set_status(self, tab: Tab, text: str):
+        tab.status = text
+        if tab is self.tab:
+            self.status_text.setText(text)
+
+    def _set_enc(self, tab: Tab, enc: tuple):
+        tab.enc = enc
+        if tab is self.tab:
+            self._lock_icon(enc[0], enc[1])
+            self.enc_text.setText(enc[2])
+
     # -------------------------------------------------------------------------- the log, questions
     def log(self, kind: str, text: str):
-        f = QTextCharFormat()
-        f.setForeground(QColor(getattr(theme, LOG_COLOURS.get(kind, "TEXT"))))
-        cur = self.logview.textCursor()
-        cur.movePosition(cur.MoveOperation.End)
-        cur.insertText(f"{kind + ':':<10}{text}\n", f)
-        self.logview.setTextCursor(cur)
-        self.logview.ensureCursorVisible()
+        self.tab.log(kind, text)
 
     def _ask(self, kind: str, payload):
         if kind in self.answers:
             return self.answers[kind](payload)
-        from .dialogs import CertDialog, FileExistsDialog, HostKeyDialog
-        dlg = {"hostkey": HostKeyDialog, "cert": CertDialog, "exists": FileExistsDialog}[kind](payload, self)
+        from .dialogs import AlreadyConnectedDialog, CertDialog, FileExistsDialog, HostKeyDialog
+        if kind == "already":
+            dlg = AlreadyConnectedDialog(*payload, self)
+        else:
+            dlg = {"hostkey": HostKeyDialog, "cert": CertDialog, "exists": FileExistsDialog}[kind](payload, self)
         return dlg.answer() if dlg.exec() else None
 
     # -------------------------------------------------------------------------- connecting
@@ -350,7 +493,9 @@ class MainWindow(QMainWindow):
         self.qc["port"].setText(str(r.get("port") or ""))
         self.qc["password"].setFocus()
 
-    def connect_to(self, site: remote.Site, password_prompt: bool = True):
+    def connect_to(self, site: remote.Site, password_prompt: bool = True, tab: Tab | None = None):
+        """Connect, as FileZilla: when this tab is already connected, ask whether to use a new tab or to abort
+        the previous connection (or do what "Always perform this action" remembered)."""
         if password_prompt and site.logon == "ask" or (site.logon == "normal" and not site.password and site.user
                                                        and site.protocol == "sftp" and password_prompt):
             pw, ok = QInputDialog.getText(self, "Enter password", f"Password for {site.user}@{site.host}:",
@@ -358,37 +503,48 @@ class MainWindow(QMainWindow):
             if not ok:
                 return
             site.password = pw
-        if self.queue is not None:
-            self.queue.stop()
-        self.remote.clear()
-        clear_compare(self.local.model, self.remote.model)
-        self.site = site
-        self.queue = None
-        self.status_text.setText(f"Connecting to {site.host}...")
-        self.browser.connect(site, self._connected, self._connect_failed)
+        if tab is None:
+            tab = self.tab
+            if tab.connected:
+                choice = settings.get("already_connected", "ask")
+                if choice not in ("new_tab", "replace"):
+                    choice = self._ask("already", (tab.label, site.name or site.host))
+                if choice is None:
+                    return
+                if choice == "new_tab":
+                    tab = self.new_tab()
+        if tab.queue is not None:
+            tab.queue.stop()
+        tab.remote.clear()
+        clear_compare(tab.local.model, tab.remote.model)
+        tab.site = site
+        tab.queue = None
+        tab.sync_base = None
+        self._set_status(tab, f"Connecting to {site.host}...")
+        tab.browser.connect(site, lambda cwd: self._connected(cwd, tab), lambda e: self._connect_failed(e, tab))
+        return tab
 
-    def _connected(self, cwd: str):
-        self.status_text.setText("Connected")
-        sites.add_recent(self.site)
-        sess = self.browser.session
+    def _connected(self, cwd: str, tab: Tab | None = None):
+        tab = tab or self.tab
+        self._set_status(tab, "Connected")
+        sites.add_recent(tab.site)
+        sess = tab.browser.session
         if sess is not None and sess.encrypted:
-            what = "SFTP" if self.site.protocol == "sftp" else "FTP OVER TLS"
-            self._lock_icon(True, f"Encrypted: {what}")
-            self.enc_text.setText(what)
+            what = "SFTP" if tab.site.protocol == "sftp" else "FTP OVER TLS"
+            self._set_enc(tab, (True, f"Encrypted: {what}", what))
         else:
-            self._lock_icon(False, "Not encrypted: plain FTP")
-            self.enc_text.setText("FTP (NOT ENCRYPTED)")
-        if self.site.local_dir and os.path.isdir(self.site.local_dir):
-            self.local.go(self.site.local_dir)
-        self.navigate(self.site.remote_dir or cwd)
-        self._title()
+            self._set_enc(tab, (False, "Not encrypted: plain FTP", "FTP (NOT ENCRYPTED)"))
+        if tab.site.local_dir and os.path.isdir(tab.site.local_dir):
+            tab.local.go(tab.site.local_dir)
+        self.navigate(tab.site.remote_dir or cwd, tab=tab)
+        self._relabel(tab)
 
-    def _connect_failed(self, error: str):
-        self.log("Error", error)
-        self.status_text.setText("Could not connect")
-        self._lock_icon(None, "")
-        self.enc_text.setText("")
-        self._title()
+    def _connect_failed(self, error: str, tab: Tab | None = None):
+        tab = tab or self.tab
+        tab.log("Error", error)
+        self._set_status(tab, "Could not connect")
+        self._set_enc(tab, (None, "", ""))
+        self._relabel(tab)
 
     def _lock_icon(self, encrypted, tip):
         if encrypted is None:
@@ -404,20 +560,21 @@ class MainWindow(QMainWindow):
         self.lock.setToolTip(tip)
 
     def disconnect(self):
-        if self.queue is not None:
-            self.queue.stop()
-        self.browser.disconnect()
-        self.remote.clear()
-        self._lock_icon(None, "")
-        self.enc_text.setText("")
-        self.status_text.setText("Disconnected from server")
-        self.log("Status", "Disconnected from server")
-        self.site_connected = False
-        self._title()
+        tab = self.tab
+        if tab.queue is not None:
+            tab.queue.stop()
+        tab.browser.disconnect()
+        tab.remote.clear()
+        tab.sync_base = None
+        self.toolbar.keys["sync"].setChecked(False)
+        self._set_enc(tab, (None, "", ""))
+        self._set_status(tab, "Disconnected from server")
+        tab.log("Status", "Disconnected from server")
+        tab.browser.run(lambda _s: None, lambda _r: self._relabel(tab), lambda _e: self._relabel(tab))
 
     def reconnect(self):
         if self.site is not None:
-            self.connect_to(self.site, password_prompt=False)
+            self.connect_to(self.site, password_prompt=False, tab=self.tab)
 
     def cancel(self):
         if self.queue is not None:
@@ -425,60 +582,60 @@ class MainWindow(QMainWindow):
             self.log("Status", "Queue stopped")
 
     def _title(self):
-        if self.site is not None and self.browser.connected:
-            who = f"{self.site.user}@" if self.site.user and self.site.user != "anonymous" else ""
-            self.setWindowTitle(f"{self.site.name or who + self.site.host} - PR7-F")
-        else:
-            self.setWindowTitle("PR7-F")
+        tab = self.tab
+        self.setWindowTitle(f"{tab.label} - PR7-F" if tab.site is not None and tab.connected else "PR7-F")
 
     # -------------------------------------------------------------------------- browsing
-    def navigate(self, path: str, done=None):
+    def navigate(self, path: str, done=None, tab: Tab | None = None):
         if not path:
             return
+        tab = tab or self.tab
 
         def listing(sess, path=path):
             return path, sess.list(path)
 
         def show(result):
             p, entries = result
-            old = self.remote.path
-            self.remote.show_listing(p, entries)
-            if self.toolbar.keys["compare"].isChecked():
-                compare(self.local.model, self.remote.model)
-            if self.sync_base and old and old != p:
-                self._sync_from_remote(p)
+            old = tab.remote.path
+            tab.remote.show_listing(p, entries)
+            if tab.compare:
+                compare(tab.local.model, tab.remote.model)
+            if tab.sync_base and old and old != p:
+                self._sync_from_remote(p, tab)
             if done:
                 done()
-        self.browser.run(listing, show, lambda e: self.log("Error", e))
+        tab.browser.run(listing, show, lambda e: tab.log("Error", e))
 
     def refresh(self):
         self.local.refresh()
         if self.browser.connected and self.remote.path:
             self.navigate(self.remote.path)
 
-    def _local_navigated(self, path):
+    def _local_navigated(self, path, tab: Tab | None = None):
+        tab = tab or self.tab
         settings.set("local_dir", path)
-        if self.toolbar.keys["compare"].isChecked():
-            compare(self.local.model, self.remote.model)
-        if self.sync_base and self.browser.connected:
-            lbase, rbase = self.sync_base
+        if tab.compare:
+            compare(tab.local.model, tab.remote.model)
+        if tab.sync_base and tab.connected:
+            lbase, rbase = tab.sync_base
             rel = os.path.relpath(path, lbase) if path.startswith(lbase) else None
             if rel is not None and not rel.startswith(".."):
                 target = rbase if rel == "." else remote.join(rbase, rel.replace(os.sep, "/"))
-                if target != self.remote.path:
-                    self._syncing = True
-                    self.navigate(target)
+                if target != tab.remote.path:
+                    tab.syncing = True
+                    self.navigate(target, tab=tab)
 
-    def _sync_from_remote(self, path):
-        if getattr(self, "_syncing", False):
-            self._syncing = False
+    def _sync_from_remote(self, path, tab: Tab | None = None):
+        tab = tab or self.tab
+        if tab.syncing:
+            tab.syncing = False
             return
-        lbase, rbase = self.sync_base
+        lbase, rbase = tab.sync_base
         if path == rbase or path.startswith(rbase.rstrip("/") + "/"):
             rel = path[len(rbase):].strip("/")
             target = os.path.join(lbase, *rel.split("/")) if rel else lbase
-            if os.path.isdir(target) and target != self.local.path:
-                self.local.go(target)
+            if os.path.isdir(target) and target != tab.local.path:
+                tab.local.go(target)
 
     def toggle_sync(self):
         key = self.toolbar.keys["sync"]
@@ -497,25 +654,28 @@ class MainWindow(QMainWindow):
         key = self.toolbar.keys["compare"]
         if self.sender() is not key:
             key.setChecked(not key.isChecked())
+        self.tab.compare = key.isChecked()
         if key.isChecked():
             compare(self.local.model, self.remote.model)
         else:
             clear_compare(self.local.model, self.remote.model)
 
-    def _toggle(self, key, widget):
+    def _toggle(self, key, part):
+        """The log, the trees: shown or hidden in every tab, as the toolbar key says."""
         k = self.toolbar.keys[key]
         if self.sender() is not k:
             k.setChecked(not k.isChecked())
-        widget.setVisible(k.isChecked())
+        for tab in self.tabs:
+            part(tab).setVisible(k.isChecked())
 
     def toggle_log(self):
-        self._toggle("log", self.logview)
+        self._toggle("log", lambda t: t.logview)
 
     def toggle_local_tree(self):
-        self._toggle("localtree", self.local.tree)
+        self._toggle("localtree", lambda t: t.local.tree)
 
     def toggle_remote_tree(self):
-        self._toggle("remotetree", self.remote.tree)
+        self._toggle("remotetree", lambda t: t.remote.tree)
 
     # -------------------------------------------------------------------------- bookmarks
     @property
@@ -566,14 +726,18 @@ class MainWindow(QMainWindow):
             key.setChecked(b.compare)
             (compare if b.compare else clear_compare)(self.local.model, self.remote.model)
 
+        tab = self.tab
+        tab.compare = b.compare
+
         def remote_done():
-            if b.sync and b.local and self.remote.path == b.remote:
-                self.toolbar.keys["sync"].setChecked(True)
-                self.sync_base = (self.local.path, self.remote.path)
-                self.log("Status", f"Synchronised browsing: {self.local.path} with {self.remote.path}")
+            if b.sync and b.local and tab.remote.path == b.remote:
+                tab.sync_base = (tab.local.path, tab.remote.path)
+                if tab is self.tab:
+                    self.toolbar.keys["sync"].setChecked(True)
+                tab.log("Status", f"Synchronised browsing: {tab.local.path} with {tab.remote.path}")
         if b.remote:
             if self.browser.connected:
-                self.navigate(b.remote, done=remote_done)
+                self.navigate(b.remote, done=remote_done, tab=tab)
             else:
                 self.log("Status", f"Bookmark {b.name}: connect to a server to open {b.remote}")
 
@@ -590,9 +754,10 @@ class MainWindow(QMainWindow):
         from . import filters
         self.filters = fs
         filters.save(fs)
-        self.local.filters = self.remote.filters = fs
-        self.local.refilter()
-        self.remote.refilter()
+        for tab in self.tabs:
+            tab.local.filters = tab.remote.filters = fs
+            tab.local.refilter()
+            tab.remote.refilter()
         self._filter_key()
 
     def _filter_key(self):
@@ -624,19 +789,24 @@ class MainWindow(QMainWindow):
         dlg.show()
 
     def toggle_queue(self):
-        self._toggle("queue", self.queue_tabs)
+        k = self.toolbar.keys["queue"]
+        if self.sender() is not k:
+            k.setChecked(not k.isChecked())
+        self.queue_tabs.setVisible(k.isChecked())
 
     # -------------------------------------------------------------------------- transfers
-    def _queue(self) -> TransferQueue | None:
-        if self.site is None or not self.browser.connected:
+    def _queue(self, tab: Tab | None = None) -> TransferQueue | None:
+        tab = tab or self.tab
+        if tab.site is None or not tab.connected:
             QMessageBox.information(self, "PR7-F", "Connect to a server first.")
             return None
-        if self.queue is None:
-            site = self.site
-            self.queue = TransferQueue(lambda: self.browser.open(site), workers=settings.get_int("transfers", 2),
-                                       ask_exists=lambda ex: self.asker.ask("exists", ex), log=self._log_from_thread,
-                                       exclude=self._filtered_out)
-        return self.queue
+        if tab.queue is None:
+            site, browser = tab.site, tab.browser
+            tab.queue = TransferQueue(lambda: browser.open(site), workers=settings.get_int("transfers", 2),
+                                      ask_exists=lambda ex: self.asker.ask("exists", ex),
+                                      log=lambda kind, text: browser.logged.emit(kind, text),
+                                      exclude=self._filtered_out)
+        return tab.queue
 
     def _log_from_thread(self, kind, text):
         self.browser.logged.emit(kind, text)
@@ -674,55 +844,71 @@ class MainWindow(QMainWindow):
             rows = [r for r in self.remote.model.rows if r.name in set(items)]
             self.download(rows, True, folder)
 
+    def _queues(self) -> list[TransferQueue]:
+        return [t.queue for t in self.tabs if t.queue is not None]
+
     def process_queue(self):
-        if self.queue is not None:
-            self.queue.start()
+        """Transfer > Process queue: every tab's (one queue list, as FileZilla)."""
+        for q in self._queues():
+            q.start()
 
     def stop_queue(self):
         self.cancel()
 
     def retry_failed(self):
-        if self.queue is not None:
-            self.queue.retry_failed()
-            self.queue.start()
+        for q in self._queues():
+            q.retry_failed()
+            q.start()
 
     def clear_finished(self):
-        if self.queue is not None:
-            with self.queue.lock:
-                self.queue.items = [i for i in self.queue.items if i.status not in ("done", "skipped")]
+        for q in self._queues():
+            with q.lock:
+                q.items = [i for i in q.items if i.status not in ("done", "skipped")]
 
     def _tick(self):
-        """5 times a second: the queue's tabs, the status bar, and listings refreshed after transfers into them."""
-        q = self.queue
-        if q is None:
-            return
-        snap = q.snapshot()
+        """5 times a second: one queue list for every tab (with the server of each), the status bar, and listings
+        refreshed after transfers into the folder a tab shows."""
+        lists = {"queued": [], "failed": [], "done": []}
+        servers: dict[int, str] = {}
+        left = 0
+        for tab in self.tabs:
+            q = tab.queue
+            if q is None:
+                continue
+            snap = q.snapshot()
+            name = tab.site.name or tab.site.host if tab.site is not None else tab.label
+            for k in lists:
+                lists[k] += snap[k]
+                for it in snap[k]:
+                    servers[it.id] = name
+            left += q.bytes_left()
+            newly = [i for i in snap["done"] if i.id not in self._done_seen and i.status == "done"]
+            for i in newly:
+                self._done_seen.add(i.id)
+            if any(i.direction == "upload" and remote.parent(i.remote) == tab.remote.path for i in newly):
+                self.navigate(tab.remote.path, tab=tab)
+            if any(i.direction == "download" and os.path.dirname(i.local) == tab.local.path for i in newly):
+                tab.local.refresh()
+            active = [i for i in snap["queued"] if i.status == "active"]
+            if active:
+                self._set_status(tab, f"{'Uploading' if active[0].direction == 'upload' else 'Downloading'} "
+                                      f"{os.path.basename(active[0].local)}")
+            elif snap["queued"] and not any(t.is_alive() for t in q.threads):
+                self._set_status(tab, "Queue stopped: Transfer > Process queue (Ctrl+P) to continue")
+            elif not snap["queued"] and tab.connected and tab.status.startswith(("Uploading", "Downloading",
+                                                                                 "Queue stopped")):
+                self._set_status(tab, "Connected")
         for k, m in self.models.items():
-            m.set_rows(snap[k])
+            m.servers = servers
+            m.set_rows(lists[k])
         for i, (k, title) in enumerate((("queued", "QUEUED FILES"), ("failed", "FAILED TRANSFERS"),
                                         ("done", "SUCCESSFUL TRANSFERS"))):
-            n = len(snap[k])
+            n = len(lists[k])
             self.queue_tabs.setTabText(i, f"{title} ({n})" if n else title)
-        left = q.bytes_left()
         self.queue_text.setText(f"Queue: {left / 1048576:.1f} MB" if left else "Queue: empty")
-        newly = [i for i in snap["done"] if i.id not in self._done_seen and i.status == "done"]
-        for i in newly:
-            self._done_seen.add(i.id)
-        if any(i.direction == "upload" and remote.parent(i.remote) == self.remote.path for i in newly):
-            self.navigate(self.remote.path)
-        if any(i.direction == "download" and os.path.dirname(i.local) == self.local.path for i in newly):
-            self.local.refresh()
-        active = [i for i in snap["queued"] if i.status == "active"]
-        if active:
-            self.status_text.setText(f"{'Uploading' if active[0].direction == 'upload' else 'Downloading'} "
-                                     f"{os.path.basename(active[0].local)}")
-        elif snap["queued"] and not any(t.is_alive() for t in q.threads):
-            self.status_text.setText("Queue stopped: Transfer > Process queue (Ctrl+P) to continue")
-        elif not snap["queued"] and self.browser.connected:
-            self.status_text.setText("Connected")
 
     def _queue_menu(self, kind, pos):
-        if self.queue is None:
+        if not self._queues():
             return
         view = self.queue_views[kind]
         ids = [self.models[kind].rows[i.row()].id for i in view.selectionModel().selectedRows()]
@@ -730,7 +916,7 @@ class MainWindow(QMainWindow):
         m.addAction("Process queue", self.process_queue)
         if kind == "failed":
             m.addAction("Retry failed transfers", self.retry_failed)
-        m.addAction("Remove selected", lambda: self.queue.cancel(ids)).setEnabled(bool(ids))
+        m.addAction("Remove selected", lambda: [q.cancel(ids) for q in self._queues()]).setEnabled(bool(ids))
         m.addAction("Clear finished transfers", self.clear_finished)
         m.exec(view.viewport().mapToGlobal(pos))
 
@@ -804,8 +990,9 @@ class MainWindow(QMainWindow):
         m.exec(self.remote.list.viewport().mapToGlobal(pos))
 
     def _remote_job(self, fn, then_refresh=True):
-        self.browser.run(fn, (lambda _r: self.navigate(self.remote.path)) if then_refresh else None,
-                         lambda e: (self.log("Error", e), self.navigate(self.remote.path)))
+        tab = self.tab
+        tab.browser.run(fn, (lambda _r: self.navigate(tab.remote.path, tab=tab)) if then_refresh else None,
+                        lambda e: (tab.log("Error", e), self.navigate(tab.remote.path, tab=tab)))
 
     def remote_mkdir(self, name: str | None = None):
         if name is None:
@@ -866,13 +1053,14 @@ class MainWindow(QMainWindow):
     # -------------------------------------------------------------------------- View/Edit
     def view_edit(self, row):
         """Download to a temporary copy, open it with its program; when it's saved, offer to upload it back."""
+        tab = self.tab
         folder = tempfile.mkdtemp(prefix="pr7f-edit-")
         local = os.path.join(folder, row.name)
-        rpath = self.remote.full(row.name)
-        site = self.site
+        rpath = tab.remote.full(row.name)
+        site, browser = tab.site, tab.browser
 
         def fetch(_sess):
-            s = self.browser.open(site)
+            s = browser.open(site)
             try:
                 s.download(rpath, local)
             finally:
@@ -880,24 +1068,25 @@ class MainWindow(QMainWindow):
             return local
 
         def opened(path):
-            self.edited[path] = rpath
+            tab.edited[path] = rpath
             self.watcher.addPath(path)
             if not self.answers.get("no_open"):
                 QDesktopServices.openUrl(QUrl.fromLocalFile(path))
-        self.browser.run(fetch, opened, lambda e: self.log("Error", e))
+        browser.run(fetch, opened, lambda e: tab.log("Error", e))
 
     def _edited_changed(self, path):
-        rpath = self.edited.get(path)
-        if not rpath or not os.path.exists(path):
+        tab = next((t for t in self.tabs if path in t.edited), None)
+        if tab is None or not os.path.exists(path):
             return
+        rpath = tab.edited[path]
         if path not in self.watcher.files():
             self.watcher.addPath(path)  # editors that save by replacing the file
         ask = self.answers.get("upload_edited")
         ok = ask(path) if ask else QMessageBox.question(
-            self, "File has changed", f"{os.path.basename(path)} has changed. Upload it back to the server?",
+            self, "File has changed", f"{os.path.basename(path)} has changed. Upload it back to {tab.label}?",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes) == QMessageBox.Yes
-        if ok and self.queue is not None or ok and self._queue() is not None:
-            q = self.queue
+        q = self._queue(tab) if ok else None
+        if q is not None:
             q.default_action["upload"] = None
             it = q.upload(path, rpath)
             old = q.ask_exists
@@ -930,8 +1119,8 @@ class MainWindow(QMainWindow):
         dlg = SettingsDialog(self)
         if dlg.exec():
             dlg.apply()
-            if self.queue is not None:
-                self.queue.workers = settings.get_int("transfers", 2)
+            for q in self._queues():
+                q.workers = settings.get_int("transfers", 2)
             theme.set_finish(settings.get("finish", "obsidian"))
             app = QApplication.instance()
             app.setPalette(theme.palette())
@@ -944,8 +1133,6 @@ class MainWindow(QMainWindow):
                           "Manager via keyring (MIT).")
 
     def closeEvent(self, e):
-        if self.queue is not None:
-            self.queue.stop()
-        self.browser.disconnect()
-        self.browser.stop()
+        for tab in self.tabs:
+            tab.close()
         super().closeEvent(e)

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.0
+
+- **Connection tabs**, as FileZilla's: File > New tab (Ctrl+T) and Close tab (Ctrl+W, or the tab's ×). Each tab has
+  its own connection, local and remote folders, message log, synchronised browsing and comparison; the tab is named
+  after its site (or user@host). The last tab stays open: closing it disconnects.
+- Connecting while the tab is already connected asks, as FileZilla does: **connect in a new tab** or **abort the
+  previous connection**, with "Always perform this action" (Edit > Settings changes it later).
+- One queue list for every tab, with a **Server** column; Process queue / Retry / Clear act on all of them. Closing a
+  tab with files still queued asks first.
+
 ## 0.3.1
 
 - Windows Defender could block PR7-F.exe as "potentially unwanted software" (a false positive common to PyInstaller

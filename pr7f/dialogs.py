@@ -188,6 +188,35 @@ class ChmodDialog(QDialog):
             cb.blockSignals(False)
 
 
+ALREADY = {"ask": "Ask what to do", "new_tab": "Connect in a new tab", "replace": "Abort the previous connection"}
+
+
+class AlreadyConnectedDialog(QDialog):
+    """FileZilla's question when the tab is already connected: a new tab, or replace this tab's connection."""
+
+    def __init__(self, current: str, new: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Already connected")
+        self.resize(620, 330)
+        body = _shell(self, "ALREADY CONNECTED")
+        body.addWidget(QLabel(f"You are already connected to {current}. What do you want to do with {new}?"))
+        self.new_tab = QRadioButton("Connect in a new tab")
+        self.replace = QRadioButton("Abort the previous connection and connect in this tab")
+        self.new_tab.setChecked(True)
+        body.addWidget(self.new_tab)
+        body.addWidget(self.replace)
+        self.always = QCheckBox("Always perform this action (Edit > Settings changes it)")
+        body.addWidget(self.always)
+        body.addStretch(1)
+        body.addWidget(_ok_cancel(self))
+
+    def answer(self) -> str:
+        choice = "new_tab" if self.new_tab.isChecked() else "replace"
+        if self.always.isChecked():
+            settings.set("already_connected", choice)
+        return choice
+
+
 class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -203,6 +232,15 @@ class SettingsDialog(QDialog):
         self.workers.setRange(1, 10)
         self.workers.setValue(settings.get_int("transfers", 2))
         g.addWidget(self.workers, 0, 1)
+        lab = QLabel("WHEN ALREADY CONNECTED")
+        lab.setProperty("role", "field")
+        g.addWidget(lab, 1, 0)
+        self.already = QComboBox()
+        for k, text in ALREADY.items():
+            self.already.addItem(text, k)
+        self.already.setCurrentIndex(list(ALREADY).index(settings.get("already_connected", "ask"))
+                                     if settings.get("already_connected", "ask") in ALREADY else 0)
+        g.addWidget(self.already, 1, 1)
         body.addWidget(box)
         f = QGroupBox("FINISH")
         fl = QGridLayout(f)
@@ -216,4 +254,5 @@ class SettingsDialog(QDialog):
 
     def apply(self):
         settings.set("transfers", self.workers.value())
+        settings.set("already_connected", self.already.currentData())
         settings.set("finish", self.finish.currentText().lower())

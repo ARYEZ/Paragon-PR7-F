@@ -51,7 +51,7 @@ app.setStyleSheet(theme.stylesheet())
 from pr7f.main_window import MainWindow  # noqa: E402
 
 w = MainWindow(str(local))
-w.answers = {"cert": lambda p: "once", "exists": lambda ex: ("overwrite", False)}
+w.answers = {"cert": lambda p: "once", "exists": lambda ex: ("overwrite", False), "already": lambda p: "replace"}
 w.show()
 w.qc["host"].setText("127.0.0.1")
 w.qc["user"].setText(USER)
@@ -117,4 +117,21 @@ mb._fill(("global", 2))
 mb.show()
 app.processEvents()
 mb.grab().save(str(out / "bookmarks.png"))
+print("ok")
+
+from pr7f import remote as _remote  # noqa: E402
+srv = FTPServer(str(server), True, str(work))
+w.close_tab(1) if len(w.tabs) > 1 else None
+w.tabbar.setCurrentIndex(0)
+w.connect_to(_remote.Site("127.0.0.1", USER, PASSWORD, srv.port, name="Paragon website",
+                          remote_dir="/public_html/music/elseworld"), tab=w.tab)
+w.browser.wait_idle()
+w.answers["already"] = lambda p: "new_tab"
+w.connect_to(_remote.Site("127.0.0.1", USER, PASSWORD, srv.port, name="Paragon NAS", remote_dir="/public_html"))
+w.browser.wait_idle()
+for _ in range(20):
+    app.processEvents()
+    time.sleep(0.02)
+w.grab().save(str(out / "tabs.png"))
+srv.stop()
 print("ok")

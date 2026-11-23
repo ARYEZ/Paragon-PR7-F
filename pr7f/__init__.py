@@ -1,3 +1,3 @@
 """Paragon PR7-F: file transfer that works the way FileZilla works, in the Paragon family look."""
 
-__version__ = "0.3.1"
+__version__ = "0.4.0"

@@ -25,6 +25,11 @@ it runs on Linux for tests. The owner writes Python; explain the why of changes.
 - `pr7f/sites.py` (no Qt): sites JSON in `%APPDATA%\Paragon\PR7-F` (`PR7F_DATA` overrides), passwords only via
   `keyring` (Windows Credential Manager); `PR7F_MEMORY_KEYRING` = an in-memory store (tests). Recent servers never
   hold passwords. Trusted FTPS certificates by SHA-256.
+- Tabs (`main_window.Tab`): each owns its site, Browser, queue, panes, log, sync_base, compare, edited, status and
+  encryption text. `MainWindow.site/queue/browser/local/remote/logview/sync_base/edited` are properties for the
+  *current* tab; anything answered later (connect, listings, remote jobs, View/Edit, bookmarks) captures its `tab`
+  and passes `tab=` so the reply lands in the tab that asked. `_tick` merges every tab's queue (QueueModel.servers).
+  `connect_to` asks `_ask("already", ...)` unless the `already_connected` setting is new_tab / replace.
 - `pr7f/browser.py`: `Browser` runs the remote pane's commands one at a time on a thread; `Asker` lets any thread ask
   the GUI (host key, certificate, file exists). `pr7f/panes.py`: list models are plain Python lists (never
   QStandardItemModel: PR7-Z's crash), the family selection band, drag and drop. `pr7f/main_window.py` wires it;
