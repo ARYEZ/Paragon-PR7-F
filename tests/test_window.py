@@ -143,8 +143,11 @@ def test_remote_file_management(qapp, window, sftp_server, server_root):
     assert window.browser.wait_idle() and wait(qapp, lambda: "home.html" in names(window.remote.model))
     row = next(r for r in window.remote.model.rows if r.name == "home.html")
     window.remote_chmod([row], 0o600)
-    assert window.browser.wait_idle() and wait(qapp, lambda: next(
-        (r.perms for r in window.remote.model.rows if r.name == "home.html"), "") == "-rw-------")
+    assert window.browser.wait_idle()
+    if os.name != "nt":  # the test server keeps files on this disk: NTFS has no Unix permissions to keep
+        assert wait(qapp, lambda: next(
+            (r.perms for r in window.remote.model.rows if r.name == "home.html"), "") == "-rw-------")
+    assert "Error" not in window.logview.toPlainText().split("Gigs")[-1]  # the server took the change
     window.remote_delete([next(r for r in window.remote.model.rows if r.name == "music")], confirm=False)  # a folder
     assert window.browser.wait_idle() and wait(qapp, lambda: "music" not in names(window.remote.model))
     assert sorted(os.listdir(server_root)) == ["Gigs", "home.html"]
