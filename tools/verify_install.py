@@ -52,21 +52,21 @@ def installed():
         root = Path(d) / "server"
         (root / "music").mkdir(parents=True)
         (root / "index.html").write_bytes(b"hi")
-        ftp, ftps = FTPServer(str(root), False, d), FTPServer(str(root), True, d)
-        sftp = SFTPServerThread(str(root))
-        try:
-            for name, url, enc in (("FTP", f"ftp://{USER}:{PASSWORD}@127.0.0.1:{ftp.port}", False),
-                                   ("FTP over TLS", f"ftpes://{USER}:{PASSWORD}@127.0.0.1:{ftps.port}", True),
-                                   ("SFTP", f"sftp://{USER}:{PASSWORD}@127.0.0.1:{sftp.port}", True)):
-                out = Path(d) / f"{name}.json"
-                subprocess.run([str(exe), "--check", url, str(out)], timeout=120, check=False)
+        # One server at a time: pyftpdlib's servers share one event loop per program.
+        servers = (("FTP", lambda: FTPServer(str(root), False, d), "ftp", False),
+                   ("FTP over TLS", lambda: FTPServer(str(root), True, d), "ftpes", True),
+                   ("SFTP", lambda: SFTPServerThread(str(root)), "sftp", True))
+        for name, start, scheme, enc in servers:
+            srv = start()
+            try:
+                out = Path(d) / f"{scheme}.json"
+                subprocess.run([str(exe), "--check", f"{scheme}://{USER}:{PASSWORD}@127.0.0.1:{srv.port}", str(out)],
+                               timeout=120, check=False)
                 got = json.loads(out.read_text(encoding="utf-8")) if out.exists() else {}
                 check(got.get("names") == ["index.html", "music"] and got.get("encrypted") is enc,
                       f"PR7-F.exe connects over {name} ({got})", p)
-        finally:
-            ftp.stop()
-            ftps.stop()
-            sftp.stop()
+            finally:
+                srv.stop()
     return p
 
 
