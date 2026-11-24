@@ -53,6 +53,8 @@ def main(argv: list[str] | None = None) -> int:
     folder = next((a for a in argv if os.path.isdir(a)), None)
     w = MainWindow(folder)
     w.show()
+    from . import update_ui
+    update_ui.start(w)  # a check for updates, once a day
     url = next((a for a in argv if "://" in a), None)
     if url:
         from . import remote

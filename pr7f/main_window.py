@@ -158,7 +158,7 @@ MENUS = {
                 ("&Disconnect\tCtrl+D", "disconnect"), "-", ("&Search remote files...\tF3", "search_remote")],
     "&Bookmarks": [("&Add bookmark...\tCtrl+B", "add_bookmark"),
                    ("&Manage bookmarks...\tCtrl+Shift+B", "manage_bookmarks")],
-    "&Help": [("&About PR7-F...", "about")],
+    "&Help": [("Check for &updates...", "check_updates"), "-", ("&About PR7-F...", "about")],
 }
 TOOLBAR = {"sitemanager": "site_manager", "log": "toggle_log", "localtree": "toggle_local_tree",
            "remotetree": "toggle_remote_tree", "queue": "toggle_queue", "refresh": "refresh",
@@ -931,6 +931,10 @@ class MainWindow(QMainWindow):
                                      for r in rows]).setEnabled(bool(rows))
         m.addAction("Create directory", self.local_mkdir)
         m.addAction("Refresh", self.local.refresh)
+        from . import family
+        if family.find("PR7-E"):  # the family's file manager, when it's installed
+            folders = [self.local.full(r.name) for r in rows if os.path.isdir(self.local.full(r.name))]
+            m.addAction("Open in PR7-E", lambda: family.launch("PR7-E", folders or [self.local.path]))
         m.addSeparator()
         m.addAction("Delete", lambda: self.local_delete(rows)).setEnabled(bool(rows))
         m.addAction("Rename", lambda: self.local_rename(rows[0])).setEnabled(len(rows) == 1)
@@ -1126,6 +1130,10 @@ class MainWindow(QMainWindow):
             app.setPalette(theme.palette())
             app.setStyleSheet(theme.stylesheet())
             self.header.update()
+
+    def check_updates(self):
+        from . import update_ui
+        update_ui.check(self)
 
     def about(self):
         QMessageBox.about(self, "About PR7-F", f"<b>Paragon PR7-F</b> {__version__}<br>File transfer that works the "

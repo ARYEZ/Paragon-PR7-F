@@ -53,3 +53,12 @@ Name: "{autodesktop}\Paragon PR7-F"; Filename: "{app}\PR7-F.exe"; Tasks: desktop
 
 [Run]
 Filename: "{app}\PR7-F.exe"; Description: "{cm:LaunchProgram,Paragon PR7-F}"; Flags: nowait postinstall skipifsilent
+; Updates (Check for Updates runs this installer with /SILENT /relaunch=1): start PR7-F again when done.
+Filename: "{app}\PR7-F.exe"; Flags: nowait runasoriginaluser; Check: Relaunch
+
+[Code]
+// True only when the updater asked for it (/relaunch=1): normal and CI installs behave as before.
+function Relaunch: Boolean;
+begin
+  Result := ExpandConstant('{param:relaunch|0}') = '1';
+end;

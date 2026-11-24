@@ -41,6 +41,8 @@ it runs on Linux for tests. The owner writes Python; explain the why of changes.
   CI installs it, and `tools/verify_install.py installed` starts real FTP/FTPS/SFTP servers and runs the installed
   `PR7-F.exe --check URL OUT` against each.
 
+- Updates: `pr7f/updates.py` (no Qt; GitHub's public releases/latest, User-Agent names only the app, installer asset `PR7-F-Setup-*.exe`, run with /SILENT /relaunch=1) and `update_ui.py` (once-a-day check from app.py, the menu's Check for Updates, UpdateDialog; settings updates/auto|last|skip; `notify` for tests). The installer's [Code] Relaunch starts PR7-F again only for /relaunch=1. Same files in every family app (PR7-W's update_ui imports PyQt6): keep them in step. `family.py`: the other family apps by their permanent AppIds (uninstall InstallLocation).
+
 ## The look (family rules)
 
 - Theme is PR7-L's (OBSIDIAN + AURORA); colours the family's only; Inter; labels UPPER CASE. The PR7-F mark: PR7

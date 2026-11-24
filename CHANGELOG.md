@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.0
+
+- **Check for updates**: a few seconds after starting (at most once a day) PR7-F asks GitHub whether a newer release is out; if so, a note offers What's new, Install Now (downloads with progress, installs over this copy, and PR7-F reopens), Later or Skip This Version. "Help > Check for updates" checks by hand. Only the app's name is sent.
+- **Open in PR7-E** on the local side's right-click menu, when PR7-E is installed.
+
 ## 0.4.0
 
 - **Connection tabs**, as FileZilla's: File > New tab (Ctrl+T) and Close tab (Ctrl+W, or the tab's ×). Each tab has
