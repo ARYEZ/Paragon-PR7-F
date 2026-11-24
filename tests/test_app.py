@@ -2,7 +2,7 @@
 
 import json
 
-from pr7f import app
+from pr7f import __version__, app
 from servers import PASSWORD, USER
 
 
@@ -18,4 +18,4 @@ def test_check_against_both_protocols(ftp_server, sftp_server, tmp_path):
 
 
 def test_version(capsys):
-    assert app.main(["--version"]) == 0 and capsys.readouterr().out.strip() == "0.4.0"
+    assert app.main(["--version"]) == 0 and capsys.readouterr().out.strip() == __version__
