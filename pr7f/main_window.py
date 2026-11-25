@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QHBox
                                QToolButton, QTreeView,
                                QVBoxLayout, QWidget)
 
-from . import __version__, remote, settings, sites, theme
+from . import __version__, finish, remote, settings, sites, theme
 from .browser import Asker, Browser
 from .panes import LocalPane, RemotePane, clear_compare, compare
 from .transfers import TransferQueue
@@ -1125,11 +1125,17 @@ class MainWindow(QMainWindow):
             dlg.apply()
             for q in self._queues():
                 q.workers = settings.get_int("transfers", 2)
-            theme.set_finish(settings.get("finish", "obsidian"))
-            app = QApplication.instance()
-            app.setPalette(theme.palette())
-            app.setStyleSheet(theme.stylesheet())
-            self.header.update()
+            self.set_finish(settings.get("finish", "obsidian"))
+
+    def set_finish(self, name: str):
+        """OBSIDIAN or AURORA, for this window and (finish.py) every other family app."""
+        theme.set_finish(name)
+        finish.set(theme.FINISH)                 # every family app follows (finish.py)
+        settings.set("finish", theme.FINISH)
+        app = QApplication.instance()
+        app.setPalette(theme.palette())
+        app.setStyleSheet(theme.stylesheet())
+        self.header.update()
 
     def check_updates(self):
         from . import update_ui

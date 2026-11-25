@@ -8,6 +8,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+os.environ["PARAGON_FAMILY_FILE"] = os.path.join(__import__("tempfile").mkdtemp(prefix="family-"), "finish")  # never the real choice
 # Tests never touch the real PR7-F data (known hosts, sites) or Windows Credential Manager.
 os.environ["PR7F_DATA"] = tempfile.mkdtemp(prefix="pr7f-data-")
 os.environ["PR7F_MEMORY_KEYRING"] = "1"
