@@ -55,4 +55,6 @@ it runs on Linux for tests. The owner writes Python; explain the why of changes.
 - Tests: `python -m pytest` (offscreen) against real servers from `tests/servers.py` (pyftpdlib single-threaded
   server: its threaded one loses the reply to a wrong password; paramiko's server side for SFTP). Never the real
   data folder or Credential Manager (conftest sets `PR7F_DATA` and `PR7F_MEMORY_KEYRING`).
-- Releases: bump `__version__` in `pr7f/__init__.py`, add a `## x.y.z` section to CHANGELOG.md; a `v*` tag publishes.
+- Releases: bump `__version__` in `pr7f/__init__.py` and add a `## x.y.z` section to CHANGELOG.md, then push:
+  CI publishes that version by itself once every check has passed (the "Is this version released yet?"
+  step; this session can't start workflows or push tags). Run workflow / `v*` tags still work.
